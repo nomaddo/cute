@@ -13,17 +13,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
 type Config struct {
-	Engine string          `json:"engine"`
-	Nodes  json.RawMessage `json:"nodes"`
+	Engine string `json:"engine"`
+	Nodes  int    `json:"nodes"`
 }
 
 func Run() {
-	configPath := flag.String("config", "", "path to config.json")
+	configPath := flag.String("config", "config.json", "path to config.json")
 	inputDir := flag.String("input", "test_kif", "input directory for KIF files")
 	outputDir := flag.String("output", "output_kif", "output directory for annotated KIF files")
 	perEvalTimeout := flag.Duration("timeout", 30*time.Second, "timeout per evaluation")
@@ -55,7 +54,10 @@ func Run() {
 		fatal(fmt.Errorf("no .kif files found in %s", *inputDir))
 	}
 
-	nodes := ParseNodes(cfg.Nodes, 10000)
+	nodes := cfg.Nodes
+	if nodes <= 0 {
+		nodes = 1000000
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -151,23 +153,6 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
-}
-
-func ParseNodes(raw json.RawMessage, fallback int) int {
-	if len(raw) == 0 {
-		return fallback
-	}
-	var asInt int
-	if err := json.Unmarshal(raw, &asInt); err == nil && asInt > 0 {
-		return asInt
-	}
-	var asString string
-	if err := json.Unmarshal(raw, &asString); err == nil {
-		if value, err := strconv.Atoi(asString); err == nil && value > 0 {
-			return value
-		}
-	}
-	return fallback
 }
 
 func fatal(err error) {

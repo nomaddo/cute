@@ -36,7 +36,7 @@ func TestUSIEngineBestMove(t *testing.T) {
 		t.Skipf("engine binary not found at %s: %v", enginePath, err)
 	}
 
-	nodes := usi.ParseNodes(cfg.Nodes, 10000)
+	nodes := cfg.Nodes
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

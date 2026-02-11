@@ -1,14 +1,19 @@
 package cute
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
 )
 
 type square struct {
@@ -63,7 +68,15 @@ func decodeKIF(data []byte) (string, error) {
 	if utf8.Valid(data) {
 		return string(data), nil
 	}
-	return "", errors.New("non-UTF-8 KIF requires Shift-JIS decoding")
+	reader := transform.NewReader(bytes.NewReader(data), japanese.ShiftJIS.NewDecoder())
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(decoded) {
+		return "", errors.New("failed to decode Shift-JIS KIF")
+	}
+	return string(decoded), nil
 }
 
 func parseKIFMoves(lines []string) ([]string, []int, error) {

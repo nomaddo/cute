@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -21,11 +22,13 @@ type Config struct {
 	Nodes  int    `json:"nodes"`
 }
 
+
 func Run() {
 	configPath := flag.String("config", "config.json", "path to config.json")
 	inputDir := flag.String("input", "test_kif", "input directory for KIF files")
-	outputDir := flag.String("output", "output_kif", "output directory for annotated KIF files")
-	perEvalTimeout := flag.Duration("timeout", 30*time.Second, "timeout per evaluation")
+	outputPath := flag.String("output", "output.parquet", "output parquet file")
+	processNum := flag.Int("process-num", 1, "number of parallel workers")
+	perEvalTimeout := flag.Duration("timeout", 10 * time.Second, "timeout per evaluation")
 	flag.Parse()
 
 	cfgPath, repoRoot, err := resolveConfigPath(*configPath)
@@ -43,9 +46,6 @@ func Run() {
 	if _, err := os.Stat(enginePath); err != nil {
 		fatal(fmt.Errorf("engine binary not found at %s: %w", enginePath, err))
 	}
-	if err := os.MkdirAll(*outputDir, 0o755); err != nil {
-		fatal(err)
-	}
 	files, err := collectKIF(*inputDir)
 	if err != nil {
 		fatal(err)
@@ -56,23 +56,84 @@ func Run() {
 
 	nodes := cfg.Nodes
 	if nodes <= 0 {
-		nodes = 1000000
+		nodes = 1000
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	session, err := StartSession(ctx, enginePath)
-	if err != nil {
-		fatal(err)
+	workers := *processNum
+	if workers <= 0 {
+		workers = 1
 	}
-	defer session.Close()
-	if err := session.Handshake(ctx); err != nil {
-		fatal(err)
+	if workers > len(files) {
+		workers = len(files)
+	}
+	if workers == 0 {
+		return
+	}
+	if dir := filepath.Dir(*outputPath); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fatal(err)
+		}
+	}
+
+	jobs := make(chan string)
+	errCh := make(chan error, workers)
+	results := make(chan GameRecord, workers)
+	writeErr := make(chan error, 1)
+	var writeWg sync.WaitGroup
+	writeWg.Add(1)
+	go func() {
+		defer writeWg.Done()
+		writeErr <- writeParquet(*outputPath, results, int64(workers))
+	}()
+
+	sessions := make([]*Session, 0, workers)
+	for i := 0; i < workers; i++ {
+		session, err := StartSession(context.Background(), enginePath)
+		if err != nil {
+			errCh <- err
+			break
+		}
+		if err := session.Handshake(context.Background()); err != nil {
+			errCh <- err
+			session.Close()
+			break
+		}
+		sessions = append(sessions, session)
+	}
+	for _, session := range sessions {
+		defer session.Close()
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < len(sessions); i++ {
+		session := sessions[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				record, err := buildGameRecord(path, session, nodes, *perEvalTimeout)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to process %s: %v\n", path, err)
+					continue
+				}
+				results <- record
+			}
+		}()
 	}
 
 	for _, path := range files {
-		if err := processKIF(path, *outputDir, session, nodes, *perEvalTimeout); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to process %s: %v\n", path, err)
+		jobs <- path
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+	writeWg.Wait()
+	if err := <-writeErr; err != nil {
+		fatal(err)
+	}
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			fatal(err)
 		}
 	}
 }
@@ -98,33 +159,6 @@ func resolveEnginePath(cfgEngine, repoRoot string) (string, error) {
 	return filepath.Join(repoRoot, cfgEngine), nil
 }
 
-func processKIF(path, outputDir string, session *Session, nodes int, perEvalTimeout time.Duration) error {
-	lines, err := readKIFLines(path)
-	if err != nil {
-		return err
-	}
-	moves, moveLines, err := parseKIFMoves(lines)
-	if err != nil {
-		return err
-	}
-	if len(moves) == 0 {
-		return fmt.Errorf("no moves found in %s", path)
-	}
-	scores := make([]Score, len(moves))
-	for i := range moves {
-		evalCtx, cancel := context.WithTimeout(context.Background(), perEvalTimeout)
-		score, _, err := session.Evaluate(evalCtx, moves[:i+1], nodes)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("move %d: %w", i+1, err)
-		}
-		scores[i] = score
-	}
-	annotated := annotateLines(lines, moveLines, scores)
-	base := filepath.Base(path)
-	outPath := filepath.Join(outputDir, base)
-	return writeLines(outPath, annotated)
-}
 
 func FindConfigPath() (string, string, error) {
 	cwd, err := os.Getwd()

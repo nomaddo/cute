@@ -2,6 +2,7 @@ package cute
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/japanese"
@@ -47,6 +49,7 @@ type Board struct {
 
 var moveLineRe = regexp.MustCompile(`^\s*(\d+)\s+(.+?)\s+\(`)
 var fromSquareRe = regexp.MustCompile(`\((\d)(\d)\)`)
+var nameRatingRe = regexp.MustCompile(`^(.+?)\((\d+)\)$`)
 
 func readKIFLines(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
@@ -65,6 +68,9 @@ func readKIFLines(path string) ([]string, error) {
 }
 
 func decodeKIF(data []byte) (string, error) {
+	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
+		data = data[3:]
+	}
 	if utf8.Valid(data) {
 		return string(data), nil
 	}
@@ -286,16 +292,171 @@ func parsePiece(text string) (string, bool, bool, error) {
 }
 
 func annotateLines(lines []string, moveLines []int, scores []Score) []string {
-	out := make([]string, 0, len(lines)+len(scores))
+	out := make([]string, 0, len(lines))
 	moveIdx := 0
 	for i, line := range lines {
-		out = append(out, line)
 		if moveIdx < len(moveLines) && i == moveLines[moveIdx] {
-			out = append(out, fmt.Sprintf("* eval %s", scores[moveIdx].String()))
+			line = fmt.Sprintf("%s * eval %s", line, scores[moveIdx].String())
 			moveIdx++
 		}
+		out = append(out, line)
 	}
 	return out
+}
+
+func buildGameRecord(path string, session *Session, nodes int, perEvalTimeout time.Duration) (GameRecord, error) {
+	lines, err := readKIFLines(path)
+	if err != nil {
+		return GameRecord{}, err
+	}
+	moves, _, err := parseKIFMoves(lines)
+	if err != nil {
+		return GameRecord{}, err
+	}
+	if len(moves) == 0 {
+		return GameRecord{}, fmt.Errorf("no moves found in %s", path)
+	}
+	scores := make([]Score, len(moves))
+	for i := range moves {
+		evalCtx, cancel := context.WithTimeout(context.Background(), perEvalTimeout)
+		score, _, err := session.Evaluate(evalCtx, moves[:i+1], nodes)
+		cancel()
+		if err != nil {
+			return GameRecord{}, fmt.Errorf("move %d: %w", i+1, err)
+		}
+		scores[i] = score
+	}
+
+	senteName, senteRating, goteName, goteRating := parsePlayers(lines)
+	resultCode, winReasonCode := parseResult(lines)
+	evals := make([]MoveEval, 0, len(scores))
+	for i, score := range scores {
+		evals = append(evals, MoveEval{
+			Ply:        int32(i + 1),
+			ScoreType:  score.Kind,
+			ScoreValue: int32(score.Value),
+		})
+	}
+
+	record := GameRecord{
+		GameID:      filepath.Base(path),
+		SenteName:   senteName,
+		SenteRating: senteRating,
+		GoteName:    goteName,
+		GoteRating:  goteRating,
+		ResultCode:  resultCode,
+		WinReasonCode: winReasonCode,
+		MoveCount:   int32(len(moves)),
+		MoveEvals:   evals,
+	}
+	return record, nil
+}
+
+func parsePlayers(lines []string) (string, int32, string, int32) {
+	sente := headerValue(lines, "先手")
+	gote := headerValue(lines, "後手")
+	senteName, senteRating := parseNameRating(sente)
+	goteName, goteRating := parseNameRating(gote)
+	return senteName, senteRating, goteName, goteRating
+}
+
+func headerValue(lines []string, key string) string {
+	prefixes := []string{key + "：", key + ":"}
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(trim, prefix) {
+				return strings.TrimSpace(strings.TrimPrefix(trim, prefix))
+			}
+		}
+	}
+	return ""
+}
+
+func parseNameRating(raw string) (string, int32) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", 0
+	}
+	match := nameRatingRe.FindStringSubmatch(raw)
+	if len(match) == 3 {
+		return strings.TrimSpace(match[1]), parseInt32(match[2])
+	}
+	return raw, 0
+}
+
+func parseInt32(raw string) int32 {
+	var value int
+	_, _ = fmt.Sscanf(raw, "%d", &value)
+	return int32(value)
+}
+
+func parseResult(lines []string) (int32, int32) {
+	terminal, ply := findTerminalMove(lines)
+	if terminal == "" {
+		return 2, 4
+	}
+	result, reason := resultFromTerminal(terminal, ply)
+	return result, reason
+}
+
+func findTerminalMove(lines []string) (string, int) {
+	ply := 0
+	for _, line := range lines {
+		match := moveLineRe.FindStringSubmatch(line)
+		if len(match) == 0 {
+			continue
+		}
+		moveText := strings.TrimSpace(match[2])
+		if moveText == "" {
+			continue
+		}
+		ply++
+		if isTerminalMove(moveText) {
+			return moveText, ply
+		}
+	}
+	return "", 0
+}
+
+func resultFromTerminal(token string, ply int) (int32, int32) {
+	switch token {
+	case "中断":
+		return 2, 4
+	case "持将棋", "千日手":
+		return 2, 4
+	case "反則勝ち", "詰み":
+		return winnerFromPly(ply), winReasonFromToken(token)
+	case "投了", "切れ負け", "反則負け":
+		return winnerFromPly(ply + 1), winReasonFromToken(token)
+	default:
+		return 2, 4
+	}
+}
+
+
+func winnerFromPly(ply int) int32 {
+	if ply%2 == 1 {
+		return 0
+	}
+	return 1
+}
+
+func winReasonFromToken(token string) int32 {
+	switch token {
+	case "詰み":
+		return 0
+	case "切れ負け":
+		return 1
+	case "反則勝ち", "反則負け":
+		return 2
+	case "投了":
+		return 3
+	case "持将棋", "千日手", "中断":
+		return 4
+	default:
+		return 4
+	}
 }
 
 func writeLines(path string, lines []string) error {

@@ -236,6 +236,12 @@ func (s *Session) Handshake(ctx context.Context) error {
 	if _, err := s.waitForEvent(ctx, EventUSIOK); err != nil {
 		return err
 	}
+	if err := s.engine.Send("setoption name FV_SCALE value 36"); err != nil {
+		return err
+	}
+	if err := s.engine.Send("setoption name Threads value 1"); err != nil {
+		return err
+	}
 	if err := s.engine.Send("isready"); err != nil {
 		return err
 	}
@@ -255,6 +261,7 @@ func (s *Session) Evaluate(ctx context.Context, moves []string, nodes int) (Scor
 	if err := s.engine.Send(fmt.Sprintf("go nodes %d", nodes)); err != nil {
 		return Score{}, "", err
 	}
+	
 	var score Score
 	haveScore := false
 	for {
@@ -272,9 +279,17 @@ func (s *Session) Evaluate(ctx context.Context, moves []string, nodes int) (Scor
 			if !haveScore {
 				return Score{}, event.Move, errors.New("no score in engine output")
 			}
+			if len(moves)%2 == 1 {
+				score = flipScore(score)
+			}
 			return score, event.Move, nil
 		}
 	}
+}
+
+func flipScore(score Score) Score {
+	score.Value = -score.Value
+	return score
 }
 
 func (s *Session) waitForEvent(ctx context.Context, want EventType) (Event, error) {

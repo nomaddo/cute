@@ -36,7 +36,10 @@ func TestUSIEngineBestMove(t *testing.T) {
 		t.Skipf("engine binary not found at %s: %v", enginePath, err)
 	}
 
-	nodes := cfg.Nodes
+	moveTimeMs := cfg.Millis
+	if moveTimeMs <= 0 {
+		moveTimeMs = 1000
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -91,7 +94,7 @@ func TestUSIEngineBestMove(t *testing.T) {
 	if err := eng.Send("position startpos"); err != nil {
 		t.Fatalf("failed to send position: %v", err)
 	}
-	if err := eng.Send(fmt.Sprintf("go nodes %d", nodes)); err != nil {
+	if err := eng.Send(fmt.Sprintf("go movetime %d", moveTimeMs)); err != nil {
 		t.Fatalf("failed to send go: %v", err)
 	}
 	best, err := waitForEvent(ctx, events, errCh, usi.EventBestMove)

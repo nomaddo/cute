@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/japanese"
@@ -304,7 +303,7 @@ func annotateLines(lines []string, moveLines []int, scores []Score) []string {
 	return out
 }
 
-func buildGameRecord(path string, session *Session, nodes int, perEvalTimeout time.Duration) (GameRecord, error) {
+func BuildGameRecord(ctx context.Context, path string, session *Session, moveTimeMs int, cache map[string]Score) (GameRecord, error) {
 	lines, err := readKIFLines(path)
 	if err != nil {
 		return GameRecord{}, err
@@ -316,19 +315,44 @@ func buildGameRecord(path string, session *Session, nodes int, perEvalTimeout ti
 	if len(moves) == 0 {
 		return GameRecord{}, fmt.Errorf("no moves found in %s", path)
 	}
+	pos, err := initialPositionFromKIF(lines)
+	if err != nil {
+		return GameRecord{}, err
+	}
+	if cache == nil {
+		cache = make(map[string]Score)
+	}
 	scores := make([]Score, len(moves))
 	for i := range moves {
-		evalCtx, cancel := context.WithTimeout(context.Background(), perEvalTimeout)
-		score, _, err := session.Evaluate(evalCtx, moves[:i+1], nodes)
-		cancel()
+		if err := ctx.Err(); err != nil {
+			return GameRecord{}, err
+		}
+		if err := pos.ApplyMove(moves[i]); err != nil {
+			return GameRecord{}, fmt.Errorf("move %d: %w", i+1, err)
+		}
+		sfen := pos.ToSFEN(i + 1)
+		key := sfen
+		if fields := strings.Fields(sfen); len(fields) >= 3 {
+			key = strings.Join(fields[:3], " ")
+		}
+		if cached, ok := cache[key]; ok {
+			scores[i] = cached
+			continue
+		}
+		score, _, err := session.Evaluate(ctx, sfen, moveTimeMs)
 		if err != nil {
 			return GameRecord{}, fmt.Errorf("move %d: %w", i+1, err)
 		}
 		scores[i] = score
+
+		// Cache only up to first 30 moves to limit memory usage.
+		if i < 30 {
+			cache[key] = score
+		}
 	}
 
 	senteName, senteRating, goteName, goteRating := parsePlayers(lines)
-	resultCode, winReasonCode := parseResult(lines)
+	result, winReason := parseResult(lines)
 	evals := make([]MoveEval, 0, len(scores))
 	for i, score := range scores {
 		evals = append(evals, MoveEval{
@@ -344,8 +368,8 @@ func buildGameRecord(path string, session *Session, nodes int, perEvalTimeout ti
 		SenteRating: senteRating,
 		GoteName:    goteName,
 		GoteRating:  goteRating,
-		ResultCode:  resultCode,
-		WinReasonCode: winReasonCode,
+		Result:      result,
+		WinReason:   winReason,
 		MoveCount:   int32(len(moves)),
 		MoveEvals:   evals,
 	}
@@ -391,10 +415,10 @@ func parseInt32(raw string) int32 {
 	return int32(value)
 }
 
-func parseResult(lines []string) (int32, int32) {
+func parseResult(lines []string) (string, string) {
 	terminal, ply := findTerminalMove(lines)
 	if terminal == "" {
-		return 2, 4
+		return "unknown", ""
 	}
 	result, reason := resultFromTerminal(terminal, ply)
 	return result, reason
@@ -419,52 +443,29 @@ func findTerminalMove(lines []string) (string, int) {
 	return "", 0
 }
 
-func resultFromTerminal(token string, ply int) (int32, int32) {
+func resultFromTerminal(token string, ply int) (string, string) {
 	switch token {
 	case "中断":
-		return 2, 4
+		return "abort", token
 	case "持将棋", "千日手":
-		return 2, 4
+		return "draw", token
 	case "反則勝ち", "詰み":
-		return winnerFromPly(ply), winReasonFromToken(token)
+		return winnerFromPly(ply), token
 	case "投了", "切れ負け", "反則負け":
-		return winnerFromPly(ply + 1), winReasonFromToken(token)
+		return winnerFromPly(ply + 1), token
 	default:
-		return 2, 4
+		return "unknown", token
 	}
 }
 
-
-func winnerFromPly(ply int) int32 {
+func winnerFromPly(ply int) string {
 	if ply%2 == 1 {
-		return 0
+		return "sente_win"
 	}
-	return 1
+	return "gote_win"
 }
 
-func winReasonFromToken(token string) int32 {
-	switch token {
-	case "詰み":
-		return 0
-	case "切れ負け":
-		return 1
-	case "反則勝ち", "反則負け":
-		return 2
-	case "投了":
-		return 3
-	case "持将棋", "千日手", "中断":
-		return 4
-	default:
-		return 4
-	}
-}
-
-func writeLines(path string, lines []string) error {
-	data := strings.Join(lines, "\n")
-	return os.WriteFile(path, []byte(data), 0o644)
-}
-
-func collectKIF(root string) ([]string, error) {
+func CollectKIF(root string) ([]string, error) {
 	var files []string
 	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {

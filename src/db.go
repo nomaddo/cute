@@ -24,8 +24,8 @@ type GameRecord struct {
 	SenteRating int32      `parquet:"name=sente_rating, type=INT32"`
 	GoteName    string     `parquet:"name=gote_name, type=BYTE_ARRAY, convertedtype=UTF8"`
 	GoteRating  int32      `parquet:"name=gote_rating, type=INT32"`
-	ResultCode  int32      `parquet:"name=result_code, type=INT32"`
-	WinReasonCode int32    `parquet:"name=win_reason_code, type=INT32"`
+	Result      string     `parquet:"name=result, type=BYTE_ARRAY, convertedtype=UTF8"`
+	WinReason   string     `parquet:"name=win_reason, type=BYTE_ARRAY, convertedtype=UTF8"`
 	MoveCount   int32      `parquet:"name=move_count, type=INT32"`
 	MoveEvals   []MoveEval `parquet:"name=move_evals, type=LIST"`
 }
@@ -43,7 +43,9 @@ type ParquetField struct {
 
 const schemaPath = "schema/parquet_schema.json"
 
-func writeParquet(path string, records <-chan GameRecord, parallel int64) error {
+func WriteParquet(path string, records <-chan GameRecord, parallel int64) error {
+	fmt.Printf("writing parquet to %s\n", path)
+
 	schema, err := loadParquetSchema(schemaPath)
 	if err != nil {
 		return err

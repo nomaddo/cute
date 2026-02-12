@@ -1,4 +1,4 @@
 {
     "engine": "/workspaces/cute/YaneuraOu/source/YaneuraOu-by-gcc",
-    "nodes": 100000
+    "millis": 1000
 }

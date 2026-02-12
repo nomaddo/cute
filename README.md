@@ -17,16 +17,3 @@ KIFを解析するためのgolangプロジェクト。
 ## KIF Format
 
 https://kakinoki.o.oo7.jp/kif_format.html
-
-## Parquest_schema.json
-
-- result_code:
-  - 0: sente win
-  - 1: gote win
-  - 2: draw
-- win_reason_code
-  - 0: mate
-  - 1: time up
-  - 2: illegal move
-  - 3: resign
-  - 4: draw

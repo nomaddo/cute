@@ -6,8 +6,8 @@
     {"name": "sente_rating", "type": "int32", "nullable": false},
     {"name": "gote_name", "type": "string", "nullable": false},
     {"name": "gote_rating", "type": "int32", "nullable": false},
-    {"name": "result_code", "type": "int32", "nullable": false},
-    {"name": "win_reason_code", "type": "int32", "nullable": false},
+    {"name": "result", "type": "string", "nullable": false},
+    {"name": "win_reason", "type": "string", "nullable": false},
     {"name": "move_count", "type": "int32", "nullable": false},
     {
       "name": "move_evals",

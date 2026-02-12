@@ -81,10 +81,12 @@ func (e *Engine) Close() error {
 		e.mu.Unlock()
 		return nil
 	}
-	e.closed = true
 	e.mu.Unlock()
 
 	_ = e.Send("quit")
+	e.mu.Lock()
+	e.closed = true
+	e.mu.Unlock()
 	done := make(chan error, 1)
 	go func() { done <- e.cmd.Wait() }()
 	select {
@@ -211,7 +213,10 @@ func StartSession(ctx context.Context, path string, args ...string) (*Session, e
 		for {
 			event, err := reader.Next()
 			if err != nil {
-				errCh <- err
+				select {
+				case errCh <- err:
+				default:
+				}
 				return
 			}
 			events <- event
@@ -228,6 +233,14 @@ func (s *Session) Close() error {
 	return s.engine.Close()
 }
 
+// Stderr returns the engine's stderr reader for diagnostics.
+func (s *Session) Stderr() io.Reader {
+	if s == nil || s.engine == nil {
+		return nil
+	}
+	return s.engine.Stderr()
+}
+
 // Handshake runs the standard USI handshake.
 func (s *Session) Handshake(ctx context.Context) error {
 	if err := s.engine.Send("usi"); err != nil {
@@ -242,6 +255,9 @@ func (s *Session) Handshake(ctx context.Context) error {
 	if err := s.engine.Send("setoption name Threads value 1"); err != nil {
 		return err
 	}
+	if err := s.engine.Send("setoption name USI_Hash value 800"); err != nil {
+		return err
+	}
 	if err := s.engine.Send("isready"); err != nil {
 		return err
 	}
@@ -249,17 +265,21 @@ func (s *Session) Handshake(ctx context.Context) error {
 	return err
 }
 
-// Evaluate runs a bounded search for the given position and returns the last score.
-func (s *Session) Evaluate(ctx context.Context, moves []string, nodes int) (Score, string, error) {
-	cmd := "position startpos"
-	if len(moves) > 0 {
-		cmd += " moves " + strings.Join(moves, " ")
-	}
+// Evaluate runs a bounded search for the given SFEN position and returns the last score.
+func (s *Session) Evaluate(ctx context.Context, sfen string, moveTimeMs int) (Score, string, error) {
+	cmd := "position sfen " + sfen
 	if err := s.engine.Send(cmd); err != nil {
 		return Score{}, "", err
 	}
-	if err := s.engine.Send(fmt.Sprintf("go nodes %d", nodes)); err != nil {
+	if moveTimeMs <= 0 {
+		moveTimeMs = 1
+	}
+	if err := s.engine.Send(fmt.Sprintf("go movetime %d", moveTimeMs)); err != nil {
 		return Score{}, "", err
+	}
+	turn := "b"
+	if fields := strings.Fields(sfen); len(fields) >= 2 {
+		turn = fields[1]
 	}
 	
 	var score Score
@@ -279,7 +299,7 @@ func (s *Session) Evaluate(ctx context.Context, moves []string, nodes int) (Scor
 			if !haveScore {
 				return Score{}, event.Move, errors.New("no score in engine output")
 			}
-			if len(moves)%2 == 1 {
+			if turn == "w" {
 				score = flipScore(score)
 			}
 			return score, event.Move, nil

@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	cute "cute/src"
+	cute "cute/pkg/cute"
 
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/reader"
@@ -189,7 +189,7 @@ func main() {
 		}()
 	}
 
-	enqueue:
+enqueue:
 	for _, path := range files {
 		if _, ok := processedIDs[filepath.Base(path)]; ok {
 			atomic.AddInt64(&processed, 1)

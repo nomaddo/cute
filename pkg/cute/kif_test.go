@@ -1,10 +1,10 @@
-package test
+package cute_test
 
 import (
 	"path/filepath"
 	"testing"
 
-	cute "cute/src"
+	cute "cute/pkg/cute"
 )
 
 func TestKIFToSFENInitial(t *testing.T) {
@@ -30,7 +30,7 @@ func TestKIFToSFENBasicAigakari(t *testing.T) {
 		t.Fatalf("failed to load board: %v", err)
 	}
 
-	expectedSFENs := []string {
+	expectedSFENs := []string{
 		"lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
 		"lnsgkgsnl/1r5b1/ppppppppp/9/9/7P1/PPPPPPP1P/1B5R1/LNSGKGSNL w - 2",
 		"lnsgkgsnl/1r5b1/p1ppppppp/1p7/9/7P1/PPPPPPP1P/1B5R1/LNSGKGSNL b - 3",
@@ -64,7 +64,7 @@ func TestKIFToSFENReal(t *testing.T) {
 		t.Fatalf("failed to load board: %v", err)
 	}
 
-	expectedSFENs := []string {
+	expectedSFENs := []string{
 		"lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
 		"lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2",
 		"lnsgkgsnl/1r5b1/pppppp1pp/6p2/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL b - 3",
@@ -188,7 +188,6 @@ func TestKIFToSFENReal(t *testing.T) {
 		"l4g2l/2kg5/p2pp2S1/1pps2K2/P2+r1S3/5P+n1P/4P2P1/2+n6/L5G1L b R2BGSN4Pn4p 121",
 		"l4g2l/2kg5/pN1pp2S1/1pps2K2/P2+r1S3/5P+n1P/4P2P1/2+n6/L5G1L w R2BGS4Pn4p 122",
 	}
-
 
 	for i, want := range expectedSFENs {
 		sfen, err := board.SFENAt(i)

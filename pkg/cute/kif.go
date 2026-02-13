@@ -46,6 +46,13 @@ type Board struct {
 	moves   []string
 }
 
+type KIFPlayers struct {
+	SenteName   string
+	SenteRating int32
+	GoteName    string
+	GoteRating  int32
+}
+
 var moveLineRe = regexp.MustCompile(`^\s*(\d+)\s+(.+?)\s+\(`)
 var fromSquareRe = regexp.MustCompile(`\((\d)(\d)\)`)
 var nameRatingRe = regexp.MustCompile(`^(.+?)\((\d+)\)$`)
@@ -382,6 +389,24 @@ func parsePlayers(lines []string) (string, int32, string, int32) {
 	senteName, senteRating := parseNameRating(sente)
 	goteName, goteRating := parseNameRating(gote)
 	return senteName, senteRating, goteName, goteRating
+}
+
+func LoadKIFPlayers(path string) (KIFPlayers, error) {
+	lines, err := readKIFLines(path)
+	if err != nil {
+		return KIFPlayers{}, err
+	}
+	return PlayersFromKIFLines(lines), nil
+}
+
+func PlayersFromKIFLines(lines []string) KIFPlayers {
+	senteName, senteRating, goteName, goteRating := parsePlayers(lines)
+	return KIFPlayers{
+		SenteName:   senteName,
+		SenteRating: senteRating,
+		GoteName:    goteName,
+		GoteRating:  goteRating,
+	}
 }
 
 func headerValue(lines []string, key string) string {

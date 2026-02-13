@@ -1,4 +1,4 @@
-package test
+package cute_test
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	usi "cute/src"
+	usi "cute/pkg/cute"
 )
 
 func TestUSIEngineBestMove(t *testing.T) {
@@ -136,4 +136,3 @@ func waitForEvent(ctx context.Context, events <-chan usi.Event, errCh <-chan err
 		}
 	}
 }
-

@@ -17,14 +17,17 @@ func FindConfigPath() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	paths := []string{
-		filepath.Join(cwd, "config.json"),
-		filepath.Join(cwd, "..", "config.json"),
-	}
-	for _, path := range paths {
+	dir := cwd
+	for {
+		path := filepath.Join(dir, "config.json")
 		if _, err := os.Stat(path); err == nil {
 			return path, filepath.Dir(path), nil
 		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 	return "", "", fmt.Errorf("config.json not found from %s", cwd)
 }

@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	cute "cute/src"
+	cute "cute/pkg/cute"
 
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/reader"

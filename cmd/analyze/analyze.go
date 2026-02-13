@@ -33,8 +33,8 @@ type stats struct {
 // main parses CLI flags and prints CSV stats for eval threshold crossings.
 func main() {
 	inputPath := flag.String("input", "output.parquet", "input parquet file")
-	thresholdsArg := flag.String("thresholds", "1000", "comma-separated eval thresholds")
-	ratingDiffMax := flag.Int("rating-diff-max", 100, "max rating difference between players")
+	thresholdsArg := flag.String("thresholds", "500", "comma-separated eval thresholds")
+	ratingDiffMax := flag.Int("rating-diff-max", 50, "max rating difference between players")
 	binSize := flag.Int("player-bin-size", 100, "player rating bucket size")
 	playerMin := flag.Int("player-min", 0, "minimum player rating (0 to auto-detect)")
 	playerMax := flag.Int("player-max", 0, "maximum player rating (0 to auto-detect)")
@@ -181,10 +181,10 @@ func buildScenarios(thresholds []int, minRating, maxRating, binSize int) []scena
 		}
 	}
 	sort.Slice(scenarios, func(i, j int) bool {
-		if scenarios[i].bucketFrom == scenarios[j].bucketFrom {
-			return scenarios[i].threshold < scenarios[j].threshold
+		if scenarios[i].threshold == scenarios[j].threshold {
+			return scenarios[i].bucketFrom < scenarios[j].bucketFrom
 		}
-		return scenarios[i].bucketFrom < scenarios[j].bucketFrom
+		return scenarios[i].threshold < scenarios[j].threshold
 	})
 	return scenarios
 }
@@ -277,23 +277,32 @@ func parseIntList(raw string) ([]int, error) {
 }
 
 // printCSV writes CSV to stdout for all scenarios.
+
 func printCSV(scenarios []scenario, results map[scenario]*stats) {
-	fmt.Println("player_bucket_from,player_bucket_to,threshold,total_games,crossings,wins,win_rate,excluded")
+	currentThreshold := 0
+	first := true
 	for _, sc := range scenarios {
+		if first || sc.threshold != currentThreshold {
+			if !first {
+				fmt.Println()
+			}
+			currentThreshold = sc.threshold
+			fmt.Printf("threshold=%d\n", currentThreshold)
+			fmt.Println("player_rate,total_games,crossings,wins,win_rate")
+			first = false
+		}
 		st := results[sc]
 		winRate := 0.0
 		if st.crossings > 0 {
 			winRate = float64(st.wins) / float64(st.crossings)
 		}
-		fmt.Printf("%d,%d,%d,%d,%d,%d,%.6f,%d\n",
-			sc.bucketFrom,
-			sc.bucketTo,
-			sc.threshold,
+		playerRate := fmt.Sprintf("%d-%d", sc.bucketFrom, sc.bucketTo)
+		fmt.Printf("%s,%d,%d,%d,%.6f\n",
+			playerRate,
 			st.totalGames,
 			st.crossings,
 			st.wins,
 			winRate,
-			st.excludedGames,
 		)
 	}
 }

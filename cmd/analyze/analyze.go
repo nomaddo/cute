@@ -83,10 +83,10 @@ func main() {
 			resultSide := winnerSide(record.Result)
 			if inBucket(int(record.SenteRating), sc) {
 				st := results[sc]
-				st.totalGames++
 				if crossingSide == "none" || resultSide == "none" {
 					st.excludedGames++
 				} else if crossingSide == "sente" {
+					st.totalGames++
 					st.crossings++
 					if resultSide == "sente" {
 						st.wins++
@@ -95,10 +95,10 @@ func main() {
 			}
 			if inBucket(int(record.GoteRating), sc) {
 				st := results[sc]
-				st.totalGames++
 				if crossingSide == "none" || resultSide == "none" {
 					st.excludedGames++
 				} else if crossingSide == "gote" {
+					st.totalGames++
 					st.crossings++
 					if resultSide == "gote" {
 						st.wins++
@@ -288,7 +288,7 @@ func printCSV(scenarios []scenario, results map[scenario]*stats) {
 			}
 			currentThreshold = sc.threshold
 			fmt.Printf("threshold=%d\n", currentThreshold)
-			fmt.Println("player_rate,total_games,crossings,wins,win_rate")
+			fmt.Println("player_rate,crossings,wins,win_rate")
 			first = false
 		}
 		st := results[sc]
@@ -297,9 +297,8 @@ func printCSV(scenarios []scenario, results map[scenario]*stats) {
 			winRate = float64(st.wins) / float64(st.crossings)
 		}
 		playerRate := fmt.Sprintf("%d-%d", sc.bucketFrom, sc.bucketTo)
-		fmt.Printf("%s,%d,%d,%d,%.6f\n",
+		fmt.Printf("%s,%d,%d,%.6f\n",
 			playerRate,
-			st.totalGames,
 			st.crossings,
 			st.wins,
 			winRate,

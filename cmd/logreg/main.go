@@ -12,12 +12,11 @@ package main
 //   (2) early advantage (first_crossed)
 //   (3) whether rating changes the "convert advantage into wins" effect
 //
-// The model uses these features:
+// The model uses these features (fit once for all players):
 //   intercept         : baseline win tendency
 //   rating_diff_scaled: (player_rating - opponent_rating) / ratingScale
 //   first_crossed     : 1 if this player first reached the eval threshold
 //   rating_x_first    : rating_scaled * first_crossed (interaction term)
-//   sente_flag        : 1 if player is sente, 0 if gote
 //
 // If rating_x_first is positive, higher-rated players convert early advantage more reliably.
 // If rating_x_first is near 0, that "conversion power" does not depend on rating.
@@ -87,31 +86,25 @@ func main() {
 		fatal(err)
 	}
 
-	// Convert game records into supervised learning samples.
-	// Each game yields two samples: one from sente's perspective and one from gote's.
-	// This keeps the model symmetric and focuses on "player vs opponent" features.
+	// Build samples for both players and fit a single model.
+	// We use batch gradient descent (simple, reliable for a small number of features).
 	samples, cts := buildSamples(records, *threshold, *ratingScale, *maxAbsDiff)
 	if len(samples) == 0 {
 		fatal(fmt.Errorf("no samples available after filtering (total=%d skipped=%d)", cts.total, cts.skipped))
 	}
-
-	// Fit logistic regression to model win probability given rating and advantage features.
-	// We use batch gradient descent (simple, reliable for a small number of features).
 	weights := fitLogReg(samples, *iter, *lr, *workers)
 
 	fmt.Println("data:")
 	fmt.Printf("  input: %s\n", *input)
 	fmt.Printf("  threshold: %d\n", *threshold)
 	fmt.Printf("  rating-scale: %.0f\n", *ratingScale)
-	fmt.Printf("  samples: %d (skipped=%d)\n", len(samples), cts.skipped)
+	fmt.Printf("  samples: total=%d (skipped=%d)\n", len(samples), cts.skipped)
 	fmt.Printf("  max-abs-diff: %d\n", *maxAbsDiff)
 	fmt.Printf("  workers: %d\n", *workers)
 	fmt.Println("model:")
-	fmt.Println("  features: intercept, rating_diff_scaled, first_crossed, rating_x_first, sente_flag")
-	printCoefficients(weights)
-	printOddsRatios(weights)
-	printPredictedRates(weights)
-	printRatingFirstCross(weights, *ratingScale, ratings)
+	fmt.Println("  features: intercept, rating_diff_scaled, first_crossed, rating_x_first")
+
+	printSection("all", weights, *ratingScale, ratings)
 }
 
 func buildSamples(records []cute.GameRecord, threshold int, ratingScale float64, maxAbsDiff int) ([]sample, counts) {
@@ -132,37 +125,30 @@ func buildSamples(records []cute.GameRecord, threshold int, ratingScale float64,
 			continue
 		}
 
-		// Add one sample per player perspective to avoid locking to a side.
-		// (sente's sample)
+		// Sente sample
 		samples = append(samples, makeSample(
 			float64(record.SenteRating),
 			float64(record.GoteRating),
 			crossingSide == "sente",
 			resultSide == "sente",
-			true,
 			ratingScale,
 		))
-		// (gote's sample)
+		// Gote sample
 		samples = append(samples, makeSample(
 			float64(record.GoteRating),
 			float64(record.SenteRating),
 			crossingSide == "gote",
 			resultSide == "gote",
-			false,
 			ratingScale,
 		))
 	}
 	return samples, cts
 }
 
-func makeSample(playerRating, opponentRating float64, playerFirstCross bool, playerWin bool, isSente bool, ratingScale float64) sample {
+func makeSample(playerRating, opponentRating float64, playerFirstCross bool, playerWin bool, ratingScale float64) sample {
 	first := 0.0
 	if playerFirstCross {
 		first = 1.0
-	}
-	sente := 0.0
-	if isSente {
-		sente = 1.0
 	}
 	label := 0.0
 	if playerWin {
@@ -177,7 +163,7 @@ func makeSample(playerRating, opponentRating float64, playerFirstCross bool, pla
 	// If its coefficient is positive, higher rating means better conversion of advantage.
 	ratingFirst := ratingScaled * first
 	return sample{
-		x: []float64{1.0, ratingDiff, first, ratingFirst, sente},
+		x: []float64{1.0, ratingDiff, first, ratingFirst},
 		y: label,
 	}
 }
@@ -258,7 +244,7 @@ func fitLogReg(samples []sample, iter int, lr float64, workers int) []float64 {
 }
 
 func printCoefficients(weights []float64) {
-	labels := []string{"intercept", "rating_diff_scaled", "first_crossed", "rating_x_first", "sente_flag"}
+	labels := []string{"intercept", "rating_diff_scaled", "first_crossed", "rating_x_first"}
 	fmt.Println("coefficients (log-odds):")
 	// Coefficients are in log-odds units; positive values increase win probability.
 	for i, w := range weights {
@@ -267,7 +253,7 @@ func printCoefficients(weights []float64) {
 }
 
 func printOddsRatios(weights []float64) {
-	labels := []string{"rating_diff_scaled", "first_crossed", "rating_x_first", "sente_flag"}
+	labels := []string{"rating_diff_scaled", "first_crossed", "rating_x_first"}
 	fmt.Println("odds ratios (1.0 = no change):")
 	// Odds ratios are easier to read: 1.0 means no change, 1.5 means 50% higher odds.
 	for i := 1; i < len(weights); i++ {
@@ -276,12 +262,10 @@ func printOddsRatios(weights []float64) {
 }
 
 func printPredictedRates(weights []float64) {
-	// These predictions use ratingDiff=0 to show the pure effect of first_crossed/sente.
+	// These predictions use ratingDiff=0 to show the pure effect of first_crossed.
 	fmt.Println("predicted win rates (rating diff = 0):")
-	fmt.Printf("  sente, first-cross=1: %.3f\n", predict(weights, 0, 1, 1, 0))
-	fmt.Printf("  sente, first-cross=0: %.3f\n", predict(weights, 0, 0, 1, 0))
-	fmt.Printf("  gote,  first-cross=1: %.3f\n", predict(weights, 0, 1, 0, 0))
-	fmt.Printf("  gote,  first-cross=0: %.3f\n", predict(weights, 0, 0, 0, 0))
+	fmt.Printf("  first-cross=1: %.3f\n", predict(weights, 0, 1, 0))
+	fmt.Printf("  first-cross=0: %.3f\n", predict(weights, 0, 0, 0))
 }
 
 func printRatingFirstCross(weights []float64, ratingScale float64, ratings []int) {
@@ -291,16 +275,23 @@ func printRatingFirstCross(weights []float64, ratingScale float64, ratings []int
 	fmt.Println("expected win rates by rating (first-cross=1, rating diff = 0):")
 	for _, rating := range ratings {
 		ratingScaled := float64(rating) / ratingScale
-		sente := predict(weights, 0, 1, 1, ratingScaled)
-		gote := predict(weights, 0, 1, 0, ratingScaled)
-		fmt.Printf("  rating=%d: sente=%.3f gote=%.3f\n", rating, sente, gote)
+		winRate := predict(weights, 0, 1, ratingScaled)
+		fmt.Printf("  rating=%d: win_rate=%.3f\n", rating, winRate)
 	}
 }
 
-func predict(weights []float64, ratingDiff float64, firstCross float64, sente float64, ratingScaled float64) float64 {
+func predict(weights []float64, ratingDiff float64, firstCross float64, ratingScaled float64) float64 {
 	// ratingScaled should match the same scale as ratingScale. It affects only the interaction.
-	x := []float64{1.0, ratingDiff, firstCross, ratingScaled * firstCross, sente}
+	x := []float64{1.0, ratingDiff, firstCross, ratingScaled * firstCross}
 	return sigmoid(dot(weights, x))
+}
+
+func printSection(label string, weights []float64, ratingScale float64, ratings []int) {
+	fmt.Printf("%s model:\n", label)
+	printCoefficients(weights)
+	printOddsRatios(weights)
+	printPredictedRates(weights)
+	printRatingFirstCross(weights, ratingScale, ratings)
 }
 
 func sigmoid(z float64) float64 {

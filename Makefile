@@ -8,6 +8,9 @@ LOGREG_WORKERS ?= 1
 
 results: results-logreg results-analyze results-stats
 
+graph:
+	go run ./cmd/graph --resume --process-num 20 --output output.parquet
+
 results-logreg:
 	@mkdir -p $(RESULTS_DIR)
 	go run ./cmd/logreg -input $(PARQUET) -threshold 300 -max-abs-diff $(LOGREG_MAX_ABS_DIFF) -workers $(LOGREG_WORKERS) > $(RESULTS_DIR)/logreg_threshold_300.txt

@@ -40,7 +40,7 @@ devcontainer では Ruby をインストール済み。
 ### 2. KIF解析 (parquet生成)
 
 ```bash
-go run ./cmd/cute -config config.json -input test_kif -output output.parquet
+go run ./cmd/graph -config config.json -input test_kif -output output.parquet
 ```
 
 主なオプション:

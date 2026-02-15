@@ -1,8 +1,15 @@
 package cute_test
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	cute "cute/pkg/cute"
 )
@@ -21,6 +28,7 @@ func TestKIFToSFENInitial(t *testing.T) {
 	if sfen != want {
 		t.Fatalf("unexpected sfen: got %s want %s", sfen, want)
 	}
+	assertPackRoundTrip(t, want)
 }
 
 func TestKIFToSFENBasicAigakari(t *testing.T) {
@@ -54,6 +62,7 @@ func TestKIFToSFENBasicAigakari(t *testing.T) {
 		if sfen != want {
 			t.Fatalf("unexpected sfen at move %d: got %s want %s", i, sfen, want)
 		}
+		assertPackRoundTrip(t, want)
 	}
 }
 
@@ -197,5 +206,117 @@ func TestKIFToSFENReal(t *testing.T) {
 		if sfen != want {
 			t.Fatalf("unexpected sfen at move %d: got %s want %s", i, sfen, want)
 		}
+		assertPackRoundTrip(t, want)
+	}
+}
+
+func assertPackRoundTrip(t *testing.T, sfen string) {
+	t.Helper()
+
+	pos, err := cute.PositionFromSFEN(sfen)
+	if err != nil {
+		t.Fatalf("failed to parse sfen: %v", err)
+	}
+	packed, err := cute.PackPosition256(pos)
+	if err != nil {
+		t.Fatalf("failed to pack sfen: %v", err)
+	}
+	unpacked, err := cute.UnpackPosition256(packed)
+	if err != nil {
+		t.Fatalf("failed to unpack sfen: %v", err)
+	}
+	moveNumber := parseMoveNumber(sfen)
+	got := unpacked.ToSFEN(moveNumber)
+	if got != sfen {
+		t.Fatalf("pack/unpack mismatch: got %s want %s", got, sfen)
+	}
+}
+
+func parseMoveNumber(sfen string) int {
+	fields := strings.Fields(sfen)
+	if len(fields) >= 4 {
+		if move, err := strconv.Atoi(fields[3]); err == nil {
+			return move
+		}
+	}
+	return 1
+}
+
+func TestBuildGameRecordEvaluatesTestKIFs(t *testing.T) {
+	cfgPath, repoRoot, err := cute.FindConfigPath()
+	if err != nil {
+		t.Fatalf("failed to locate config.json: %v", err)
+	}
+	cfg, err := cute.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load config.json: %v", err)
+	}
+	if cfg.Engine == "" {
+		t.Fatal("config.json is missing engine path")
+	}
+
+	enginePath := cfg.Engine
+	if !filepath.IsAbs(enginePath) {
+		enginePath = filepath.Join(repoRoot, enginePath)
+	}
+	if _, err := os.Stat(enginePath); err != nil {
+		t.Skipf("engine binary not found at %s: %v", enginePath, err)
+	}
+
+	testDir := filepath.Join(repoRoot, "test")
+	files, err := cute.CollectKIF(testDir)
+	if err != nil {
+		t.Fatalf("failed to collect kifs: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no .kif files found in test dir")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	session, err := cute.StartSession(ctx, enginePath)
+	if err != nil {
+		t.Fatalf("failed to start engine session: %v", err)
+	}
+	defer session.Close()
+
+	stderrBuf := &bytes.Buffer{}
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(stderrBuf, session.Stderr())
+		close(stderrDone)
+	}()
+
+	if err := session.Handshake(ctx); err != nil {
+		if shouldSkipForMissingLibs(stderrBuf, stderrDone) {
+			t.Skipf("engine cannot start due to missing runtime libraries: %s", strings.TrimSpace(stderrBuf.String()))
+		}
+		t.Fatalf("usi handshake failed: %v", err)
+	}
+
+	cache := make(map[string]cute.Score)
+	moveTimeMs := 1
+	for _, path := range files {
+		record, err := cute.BuildGameRecord(ctx, path, session, moveTimeMs, cache)
+		if err != nil {
+			t.Fatalf("failed to build game record for %s: %v", path, err)
+		}
+		if record.MoveCount == 0 {
+			t.Fatalf("empty record for %s", path)
+		}
+		if int32(len(record.MoveEvals)) != record.MoveCount {
+			t.Fatalf("move eval count mismatch for %s: got %d want %d", path, len(record.MoveEvals), record.MoveCount)
+		}
+		for _, eval := range record.MoveEvals {
+			if eval.ScoreType != "cp" && eval.ScoreType != "mate" {
+				t.Fatalf("unexpected score type for %s: %s", path, eval.ScoreType)
+			}
+		}
+	}
+
+	// Ensure the engine is still responsive after processing all games.
+	if _, _, err := session.Evaluate(ctx, "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1", moveTimeMs); err != nil {
+		t.Fatalf("engine stopped after evaluations: %v", err)
 	}
 }

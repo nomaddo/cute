@@ -19,6 +19,13 @@ KIFを解析するためのGoプロジェクト。
 
 以降のコマンドはリポジトリ直下で実行する。
 
+### Requirements
+
+- Go
+- Ruby (tools/classify_kif_to_db.rb を使う場合)
+
+devcontainer では Ruby をインストール済み。
+
 ### 1. config.json
 
 `engine` に将棋AIの実行ファイル、`millis` に1手あたりの思考時間(ms)を指定する。

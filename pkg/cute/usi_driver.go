@@ -255,7 +255,7 @@ func (s *Session) Handshake(ctx context.Context) error {
 	if err := s.engine.Send("setoption name Threads value 1"); err != nil {
 		return err
 	}
-	if err := s.engine.Send("setoption name USI_Hash value 800"); err != nil {
+	if err := s.engine.Send("setoption name USI_Hash value 700"); err != nil {
 		return err
 	}
 	if err := s.engine.Send("isready"); err != nil {
@@ -281,7 +281,7 @@ func (s *Session) Evaluate(ctx context.Context, sfen string, moveTimeMs int) (Sc
 	if fields := strings.Fields(sfen); len(fields) >= 2 {
 		turn = fields[1]
 	}
-	
+
 	var score Score
 	haveScore := false
 	for {

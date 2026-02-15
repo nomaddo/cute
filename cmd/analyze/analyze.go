@@ -35,6 +35,7 @@ func main() {
 	inputPath := flag.String("input", "output.parquet", "input parquet file")
 	thresholdsArg := flag.String("thresholds", "500", "comma-separated eval thresholds")
 	ratingDiffMax := flag.Int("rating-diff-max", 50, "max rating difference between players")
+	ignoreFirstMoves := flag.Int("ignore-first-moves", 0, "ignore evals up to this move number (0=disabled)")
 	binSize := flag.Int("player-bin-size", 100, "player rating bucket size")
 	playerMin := flag.Int("player-min", 0, "minimum player rating (0 to auto-detect)")
 	playerMax := flag.Int("player-max", 0, "maximum player rating (0 to auto-detect)")
@@ -53,6 +54,9 @@ func main() {
 	}
 	if *ratingDiffMax < 0 {
 		fatal(fmt.Errorf("rating-diff-max must be >= 0"))
+	}
+	if *ignoreFirstMoves < 0 {
+		fatal(fmt.Errorf("ignore-first-moves must be >= 0"))
 	}
 
 	records, err := readParquet(*inputPath, *parallel)
@@ -79,7 +83,7 @@ func main() {
 			continue
 		}
 		for _, sc := range scenarios {
-			crossingSide := firstCrossingSide(record.MoveEvals, sc.threshold)
+			crossingSide := firstCrossingSide(record.MoveEvals, sc.threshold, *ignoreFirstMoves)
 			resultSide := winnerSide(record.Result)
 			if inBucket(int(record.SenteRating), sc) {
 				st := results[sc]
@@ -224,8 +228,12 @@ func inBucket(rating int, sc scenario) bool {
 
 // firstCrossingSide returns which side first crosses the eval threshold.
 // evals: per-move evaluations; threshold: centipawn threshold to detect.
-func firstCrossingSide(evals []cute.MoveEval, threshold int) string {
+// ignoreFirstMoves: ignore evals up to this move number (0=disabled).
+func firstCrossingSide(evals []cute.MoveEval, threshold int, ignoreFirstMoves int) string {
 	for _, eval := range evals {
+		if ignoreFirstMoves > 0 && int(eval.Ply) <= ignoreFirstMoves {
+			continue
+		}
 		if eval.ScoreType == "mate" {
 			if eval.ScoreValue >= 0 {
 				return "sente"

@@ -44,6 +44,7 @@ type Position struct {
 type Board struct {
 	initial Position
 	moves   []string
+	foulEnd bool
 }
 
 type KIFPlayers struct {
@@ -54,6 +55,7 @@ type KIFPlayers struct {
 }
 
 var moveLineRe = regexp.MustCompile(`^\s*(\d+)\s+(.+?)\s+\(`)
+var terminalLineRe = regexp.MustCompile(`^\s*(\d+)\s+(.+?)\s*$`)
 var fromSquareRe = regexp.MustCompile(`\((\d)(\d)\)`)
 var nameRatingRe = regexp.MustCompile(`^(.+?)\((\d+)\)$`)
 
@@ -197,11 +199,19 @@ func parseKIFMoveToken(token string, prevDest *square) (string, *square, bool, e
 
 func isTerminalMove(token string) bool {
 	switch token {
-	case "投了", "中断", "持将棋", "千日手", "詰み", "切れ負け", "反則勝ち", "反則負け":
+	case "投了", "中断", "持将棋", "千日手", "詰み", "切れ負け", "反則勝ち", "反則負け", "入玉勝ち", "勝ち宣言":
 		return true
 	default:
 		return false
 	}
+}
+
+// isFoulEnd returns true if the game ended with 反則勝ち or 反則負け.
+// The last move before the terminal marker is an illegal move and
+// produces an invalid position that engines cannot evaluate.
+func isFoulEnd(lines []string) bool {
+	terminal, _ := findTerminalMove(lines)
+	return terminal == "反則勝ち" || terminal == "反則負け"
 }
 
 func parseFromSquare(text string) (int, int, bool) {
@@ -322,6 +332,15 @@ func BuildGameRecord(ctx context.Context, path string, session *Session, moveTim
 	if len(moves) == 0 {
 		return GameRecord{}, fmt.Errorf("no moves found in %s", path)
 	}
+
+	// When the game ended with a foul (反則勝ち/反則負け), the last move
+	// produced an illegal position that engines cannot evaluate.
+	// Exclude it from the move list.
+	foul := isFoulEnd(lines)
+	if foul && len(moves) > 0 {
+		moves = moves[:len(moves)-1]
+	}
+
 	pos, err := initialPositionFromKIF(lines)
 	if err != nil {
 		return GameRecord{}, err
@@ -452,7 +471,12 @@ func parseResult(lines []string) (string, string) {
 func findTerminalMove(lines []string) (string, int) {
 	ply := 0
 	for _, line := range lines {
+		// Try the standard move line pattern first (has clock info).
 		match := moveLineRe.FindStringSubmatch(line)
+		if len(match) == 0 {
+			// Terminal markers like "反則勝ち" have no clock parenthesis.
+			match = terminalLineRe.FindStringSubmatch(line)
+		}
 		if len(match) == 0 {
 			continue
 		}
@@ -527,7 +551,7 @@ func BoardFromKIF(lines []string) (*Board, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Board{initial: pos, moves: moves}, nil
+	return &Board{initial: pos, moves: moves, foulEnd: isFoulEnd(lines)}, nil
 }
 
 func (b *Board) MoveCount() int {
@@ -535,6 +559,16 @@ func (b *Board) MoveCount() int {
 		return 0
 	}
 	return len(b.moves)
+}
+
+// IsFoulEnd returns true if the game ended with an illegal move (反則).
+// When true, the last move in the move list produced an illegal position
+// and should not be evaluated by an engine.
+func (b *Board) IsFoulEnd() bool {
+	if b == nil {
+		return false
+	}
+	return b.foulEnd
 }
 
 func (b *Board) SFENAt(move int) (string, error) {

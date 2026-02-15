@@ -35,7 +35,7 @@ type stats struct {
 // main parses CLI flags and prints CSV stats for eval threshold crossings.
 func main() {
 	inputPath := flag.String("input", "output.parquet", "input parquet file")
-	thresholdsArg := flag.String("thresholds", "500", "comma-separated eval thresholds")
+	thresholdsArg := flag.String("thresholds", "300,500,1000", "comma-separated eval thresholds")
 	ratingDiffMax := flag.Int("rating-diff-max", 50, "max rating difference between players")
 	ignoreFirstMoves := flag.Int("ignore-first-moves", 0, "ignore evals up to this move number (0=disabled)")
 	binSize := flag.Int("player-bin-size", 100, "player rating bucket size")
@@ -121,6 +121,8 @@ func main() {
 		results[sc] = &stats{}
 	}
 
+	hasCrossingSideFilter := len(crossingSides) > 0
+
 	for _, record := range records {
 		ratingDiff := int(math.Abs(float64(record.SenteRating - record.GoteRating)))
 		if ratingDiff > *ratingDiffMax {
@@ -129,7 +131,7 @@ func main() {
 		// Determine which sides to count crossings for.
 		countSente := true
 		countGote := true
-		if len(crossingSides) > 0 {
+		if hasCrossingSideFilter {
 			side := crossingSides[normalizeGameID(record.GameID)]
 			countSente = side == "sente" || side == "both"
 			countGote = side == "gote" || side == "both"
@@ -147,6 +149,9 @@ func main() {
 					if resultSide == "sente" {
 						st.wins++
 					}
+				} else if hasCrossingSideFilter {
+					// Count games where the filtered side didn't cross first.
+					st.totalGames++
 				}
 			}
 			if countGote && inBucket(int(record.GoteRating), sc) {
@@ -159,12 +164,15 @@ func main() {
 					if resultSide == "gote" {
 						st.wins++
 					}
+				} else if hasCrossingSideFilter {
+					// Count games where the filtered side didn't cross first.
+					st.totalGames++
 				}
 			}
 		}
 	}
 
-	printCSV(scenarios, results)
+	printCSV(scenarios, results, hasCrossingSideFilter)
 }
 
 // readParquet loads all GameRecord rows from a parquet file.
@@ -337,8 +345,8 @@ func parseIntList(raw string) ([]int, error) {
 }
 
 // printCSV writes CSV to stdout for all scenarios.
-
-func printCSV(scenarios []scenario, results map[scenario]*stats) {
+// showCrossingRate: when true, adds total_games and crossing_rate columns.
+func printCSV(scenarios []scenario, results map[scenario]*stats, showCrossingRate bool) {
 	currentThreshold := 0
 	first := true
 	for _, sc := range scenarios {
@@ -348,7 +356,11 @@ func printCSV(scenarios []scenario, results map[scenario]*stats) {
 			}
 			currentThreshold = sc.threshold
 			fmt.Printf("threshold=%d\n", currentThreshold)
-			fmt.Println("player_rate,crossings,wins,win_rate")
+			if showCrossingRate {
+				fmt.Println("player_rate,total_games,crossings,crossing_rate,wins,win_rate")
+			} else {
+				fmt.Println("player_rate,crossings,wins,win_rate")
+			}
 			first = false
 		}
 		st := results[sc]
@@ -357,12 +369,27 @@ func printCSV(scenarios []scenario, results map[scenario]*stats) {
 			winRate = float64(st.wins) / float64(st.crossings)
 		}
 		playerRate := fmt.Sprintf("%d-%d", sc.bucketFrom, sc.bucketTo)
-		fmt.Printf("%s,%d,%d,%.6f\n",
-			playerRate,
-			st.crossings,
-			st.wins,
-			winRate,
-		)
+		if showCrossingRate {
+			crossingRate := 0.0
+			if st.totalGames > 0 {
+				crossingRate = float64(st.crossings) / float64(st.totalGames)
+			}
+			fmt.Printf("%s,%d,%d,%.6f,%d,%.6f\n",
+				playerRate,
+				st.totalGames,
+				st.crossings,
+				crossingRate,
+				st.wins,
+				winRate,
+			)
+		} else {
+			fmt.Printf("%s,%d,%d,%.6f\n",
+				playerRate,
+				st.crossings,
+				st.wins,
+				winRate,
+			)
+		}
 	}
 }
 

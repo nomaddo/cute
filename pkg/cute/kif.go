@@ -207,11 +207,21 @@ func isTerminalMove(token string) bool {
 }
 
 // isFoulEnd returns true if the game ended with 反則勝ち or 反則負け.
-// The last move before the terminal marker is an illegal move and
-// produces an invalid position that engines cannot evaluate.
+// The move(s) before the terminal marker produced illegal positions
+// that engines cannot evaluate.
 func isFoulEnd(lines []string) bool {
 	terminal, _ := findTerminalMove(lines)
 	return terminal == "反則勝ち" || terminal == "反則負け"
+}
+
+// foulEndType returns the terminal token if the game ended with a foul,
+// or empty string otherwise.
+func foulEndType(lines []string) string {
+	terminal, _ := findTerminalMove(lines)
+	if terminal == "反則勝ち" || terminal == "反則負け" {
+		return terminal
+	}
+	return ""
 }
 
 func parseFromSquare(text string) (int, int, bool) {
@@ -333,12 +343,26 @@ func BuildGameRecord(ctx context.Context, path string, session *Session, moveTim
 		return GameRecord{}, fmt.Errorf("no moves found in %s", path)
 	}
 
-	// When the game ended with a foul (反則勝ち/反則負け), the last move
-	// produced an illegal position that engines cannot evaluate.
-	// Exclude it from the move list.
-	foul := isFoulEnd(lines)
-	if foul && len(moves) > 0 {
-		moves = moves[:len(moves)-1]
+	// When the game ended with a foul (反則), exclude moves that produced
+	// illegal positions that engines cannot evaluate.
+	//
+	//   反則勝ち: The last move is the illegal move itself (e.g. 二歩).
+	//             Remove 1 move.
+	//   反則負け: The second-to-last move is illegal (e.g. 王手放置) and
+	//             the last move captures the king to prove the foul.
+	//             Remove 2 moves.
+	foulType := foulEndType(lines)
+	switch foulType {
+	case "反則負け":
+		if len(moves) > 1 {
+			moves = moves[:len(moves)-2]
+		} else {
+			moves = nil
+		}
+	case "反則勝ち":
+		if len(moves) > 0 {
+			moves = moves[:len(moves)-1]
+		}
 	}
 
 	pos, err := initialPositionFromKIF(lines)
@@ -355,6 +379,14 @@ func BuildGameRecord(ctx context.Context, path string, session *Session, moveTim
 		}
 		if err := pos.ApplyMove(moves[i]); err != nil {
 			return GameRecord{}, fmt.Errorf("move %d: %w", i+1, err)
+		}
+		// Safety net: stop if the position is illegal (e.g. king left
+		// in check). This prevents sending an invalid SFEN to the
+		// engine which would cause a crash.
+		if !pos.IsLegalPosition() {
+			scores = scores[:i]
+			moves = moves[:i]
+			break
 		}
 		sfen := pos.ToSFEN(i + 1)
 		key := sfen
@@ -569,6 +601,39 @@ func (b *Board) IsFoulEnd() bool {
 		return false
 	}
 	return b.foulEnd
+}
+
+// InitialPosition returns a clone of the board's initial position.
+func (b *Board) InitialPosition() Position {
+	return b.initial.Clone()
+}
+
+// Moves returns the board's move list.
+func (b *Board) Moves() []string {
+	out := make([]string, len(b.moves))
+	copy(out, b.moves)
+	return out
+}
+
+// NewPosition returns an empty Position (no pieces, Black to move).
+func NewPosition() Position {
+	return Position{
+		hands: map[Color]map[string]int{
+			Black: {},
+			White: {},
+		},
+		turn: Black,
+	}
+}
+
+// SetPiece places a piece on the board.  file and rank are 1-indexed.
+func (p *Position) SetPiece(file, rank int, kind string, color Color, promoted bool) {
+	p.setPiece(square{file: file, rank: rank}, &Piece{kind: kind, color: color, promoted: promoted})
+}
+
+// SetTurn sets which side is to move.
+func (p *Position) SetTurn(color Color) {
+	p.turn = color
 }
 
 func (b *Board) SFENAt(move int) (string, error) {
@@ -977,6 +1042,230 @@ func (p *Position) toggleTurn() {
 		p.turn = White
 	} else {
 		p.turn = Black
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Position legality helpers
+// ---------------------------------------------------------------------------
+
+// findKing returns the square of the king for the given color.
+func (p *Position) findKing(color Color) (square, bool) {
+	for rank := 1; rank <= 9; rank++ {
+		for file := 1; file <= 9; file++ {
+			piece := p.board[rank-1][file-1]
+			if piece != nil && piece.kind == "K" && piece.color == color {
+				return square{file: file, rank: rank}, true
+			}
+		}
+	}
+	return square{}, false
+}
+
+// IsInCheck returns true if the king of the given color is in check
+// (i.e. under attack by the opponent).
+func (p *Position) IsInCheck(color Color) bool {
+	kingSquare, found := p.findKing(color)
+	if !found {
+		return false
+	}
+	attacker := Black
+	if color == Black {
+		attacker = White
+	}
+	return p.isAttackedBy(kingSquare, attacker)
+}
+
+// IsLegalPosition returns true when the position is legal.
+// After a move, the side that just moved must not have left its own king
+// in check. Since ApplyMove toggles the turn, the "side that just moved"
+// is the opponent of p.turn.
+func (p *Position) IsLegalPosition() bool {
+	justMoved := Black
+	if p.turn == Black {
+		justMoved = White
+	}
+	return !p.IsInCheck(justMoved)
+}
+
+// isAttackedBy returns true if any piece of the given color attacks the target square.
+func (p *Position) isAttackedBy(target square, attacker Color) bool {
+	for rank := 1; rank <= 9; rank++ {
+		for file := 1; file <= 9; file++ {
+			piece := p.board[rank-1][file-1]
+			if piece == nil || piece.color != attacker {
+				continue
+			}
+			from := square{file: file, rank: rank}
+			if p.canAttackSquare(piece, from, target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// forwardDir returns the rank step for "forward" movement.
+// Black advances toward rank 1 (step = -1), White toward rank 9 (step = +1).
+func forwardDir(color Color) int {
+	if color == Black {
+		return -1
+	}
+	return 1
+}
+
+func intAbs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func intSign(x int) int {
+	if x > 0 {
+		return 1
+	}
+	if x < 0 {
+		return -1
+	}
+	return 0
+}
+
+// isPathClear returns true when all squares between from and target
+// (exclusive) are empty. from and target must be on the same rank,
+// file, or diagonal.
+func (p *Position) isPathClear(from, target square) bool {
+	df := target.file - from.file
+	dr := target.rank - from.rank
+	stepF := intSign(df)
+	stepR := intSign(dr)
+	f := from.file + stepF
+	r := from.rank + stepR
+	for f != target.file || r != target.rank {
+		if p.board[r-1][f-1] != nil {
+			return false
+		}
+		f += stepF
+		r += stepR
+	}
+	return true
+}
+
+func isRookSlide(df, dr int) bool {
+	return (df == 0) != (dr == 0)
+}
+
+func isBishopSlide(df, dr int) bool {
+	return intAbs(df) == intAbs(dr) && df != 0
+}
+
+func isGoldMove(df, dr int, color Color) bool {
+	if intAbs(df) > 1 || intAbs(dr) > 1 {
+		return false
+	}
+	if df == 0 && dr == 0 {
+		return false
+	}
+	// Gold cannot move diagonally backward.
+	fwd := forwardDir(color)
+	if intAbs(df) == 1 && dr == -fwd {
+		return false
+	}
+	return true
+}
+
+func isSilverMove(df, dr int, color Color) bool {
+	if intAbs(df) > 1 || intAbs(dr) > 1 {
+		return false
+	}
+	if df == 0 && dr == 0 {
+		return false
+	}
+	fwd := forwardDir(color)
+	// Silver cannot move sideways or straight backward.
+	if df != 0 && dr == 0 {
+		return false // sideways
+	}
+	if df == 0 && dr == -fwd {
+		return false // straight backward
+	}
+	return true
+}
+
+// canAttackSquare returns true if piece at from can attack target.
+func (p *Position) canAttackSquare(piece *Piece, from, target square) bool {
+	df := target.file - from.file
+	dr := target.rank - from.rank
+	if df == 0 && dr == 0 {
+		return false
+	}
+
+	if piece.promoted {
+		switch piece.kind {
+		case "P", "L", "N", "S":
+			// Promoted minor pieces move like Gold.
+			return isGoldMove(df, dr, piece.color)
+		case "R":
+			// Dragon (promoted Rook): rook slides + 1-square diagonal.
+			if intAbs(df) <= 1 && intAbs(dr) <= 1 {
+				return true
+			}
+			if isRookSlide(df, dr) {
+				return p.isPathClear(from, target)
+			}
+			return false
+		case "B":
+			// Horse (promoted Bishop): bishop slides + 1-square orthogonal.
+			if intAbs(df) <= 1 && intAbs(dr) <= 1 {
+				return true
+			}
+			if isBishopSlide(df, dr) {
+				return p.isPathClear(from, target)
+			}
+			return false
+		default:
+			return false
+		}
+	}
+
+	switch piece.kind {
+	case "K":
+		return intAbs(df) <= 1 && intAbs(dr) <= 1
+	case "G":
+		return isGoldMove(df, dr, piece.color)
+	case "S":
+		return isSilverMove(df, dr, piece.color)
+	case "N":
+		fwd := forwardDir(piece.color)
+		return intAbs(df) == 1 && dr == 2*fwd
+	case "L":
+		fwd := forwardDir(piece.color)
+		if df != 0 {
+			return false
+		}
+		// dr must be in the forward direction.
+		if fwd < 0 && dr >= 0 {
+			return false
+		}
+		if fwd > 0 && dr <= 0 {
+			return false
+		}
+		return p.isPathClear(from, target)
+	case "P":
+		fwd := forwardDir(piece.color)
+		return df == 0 && dr == fwd
+	case "R":
+		if !isRookSlide(df, dr) {
+			return false
+		}
+		return p.isPathClear(from, target)
+	case "B":
+		if !isBishopSlide(df, dr) {
+			return false
+		}
+		return p.isPathClear(from, target)
+	default:
+		return false
 	}
 }
 

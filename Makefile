@@ -1,15 +1,16 @@
-PARQUET ?= out/games_34105_eval.parquet
+PARQUET ?= out/checkpoint_55396.pqrquet
 OPENING_DB ?= out/6_senkei.parquet
 RESULTS_DIR ?= out/results
 LOGREG_MAX_ABS_DIFF ?= 200
 LOGREG_WORKERS ?= 1
+KIFU_DIR ?= test_dir
 
 .PHONY: results results-logreg results-analyze results-stats
 
 results: results-logreg results-analyze results-stats
 
 graph:
-	go run ./cmd/graph --resume --process-num 20 --output output.parquet
+	go run ./cmd/graph -input $(KIFU_DIR) --resume --process-num 20 --output output.parquet
 
 results-logreg:
 	@mkdir -p $(RESULTS_DIR)

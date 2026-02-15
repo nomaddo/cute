@@ -1,4 +1,5 @@
 PARQUET ?= out/games_34105_eval.parquet
+OPENING_DB ?= out/6_senkei.parquet
 RESULTS_DIR ?= out/results
 LOGREG_MAX_ABS_DIFF ?= 200
 LOGREG_WORKERS ?= 1
@@ -20,3 +21,27 @@ results-analyze:
 results-stats:
 	@mkdir -p $(RESULTS_DIR)
 	go run ./cmd/stats -parquet $(PARQUET) > $(RESULTS_DIR)/stats.txt
+
+shikenbisya-ibisya:
+	go run ./cmd/analyze -input $(PARQUET) -opening-db $(OPENING_DB) -thresholds "200,300,500,1000" -ignore-first-moves 20 \
+		-filter '(has(sente.attack, "四間飛車") && has (gote.note, "居飛車")) || (has(gote.attack, "四間飛車") && has(sente.note, "居飛車"))' \
+		-crossing-side-filter 'has(note, "居飛車")'
+
+shikenbisya-shikenbisya:
+	go run ./cmd/analyze -input $(PARQUET) -opening-db $(OPENING_DB) -thresholds "200,300,500,1000" -ignore-first-moves 20 \
+		-filter '(has(sente.attack, "四間飛車") && has (gote.note, "居飛車")) || (has(gote.attack, "四間飛車") && has(sente.note, "居飛車"))' \
+		-crossing-side-filter 'has(attack, "四間飛車")'
+
+ibisha:
+	go run ./cmd/analyze -input $(PARQUET) -opening-db $(OPENING_DB) -thresholds "200,300,500,1000" -ignore-first-moves 20 \
+		-filter 'has(sente.note, "居飛車") && has(gote.note, "居飛車")'
+
+taikoukei-ibisya:
+	go run ./cmd/analyze -input $(PARQUET) -opening-db $(OPENING_DB) -thresholds "200,300,500,1000" -ignore-first-moves 20 \
+		-filter 'has(sente.note, "対抗形") && has(gote.note, "対抗形")' \
+		-crossing-side-filter 'has(note, "居飛車")'
+
+taikoukei-huribisya:
+	go run ./cmd/analyze -input $(PARQUET) -opening-db $(OPENING_DB) -thresholds "200,300" -ignore-first-moves 20 \
+		-filter 'has(sente.note, "対抗形") && has(gote.note, "対抗形")' \
+		-crossing-side-filter 'has(note, "振り飛車")'

@@ -34,7 +34,7 @@ func TestSFENComparisonWithBioshogi(t *testing.T) {
 		t.Skip("bioshogi gem not installed (run: gem install bioshogi)")
 	}
 
-	testDir := filepath.Join(repoRoot, "test")
+	testDir := filepath.Join(repoRoot, "pkg", "cute", "testdata")
 	files, err := cute.CollectKIF(testDir)
 	if err != nil {
 		t.Fatalf("failed to collect kifs: %v", err)

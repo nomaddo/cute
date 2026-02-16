@@ -20,6 +20,10 @@ type userStats struct {
 	totalGames   int            // games included in crossing analysis (excludes draws/none)
 	crossings    int            // times the user's side crossed first
 	wins         int            // wins when user crossed first
+	nonCrossings int            // times the opponent crossed first
+	nonWins      int            // wins when opponent crossed first
+	lossSum      int64          // sum of per-move loss (cp)
+	lossCount    int            // number of positions used for loss
 	attackCounts map[string]int // attack tag → number of games
 	ratingSum    int64
 	ratingCount  int
@@ -57,6 +61,8 @@ func main() {
 	threshold := flag.Int("threshold", 500, "eval threshold for crossing detection")
 	minGames := flag.Int("min-games", 20, "minimum games per user (in opening DB)")
 	ignoreFirstMoves := flag.Int("ignore-first-moves", 0, "ignore evals up to this move number")
+	lossMaxEval := flag.Int("loss-max-eval", 600, "only count loss when |eval| <= X (0 = no limit)")
+	lossIgnoreMoves := flag.Int("loss-ignore-moves", 20, "ignore first N moves when calculating loss")
 	topN := flag.Int("top-attacks", 3, "number of top attack strategies to show per user")
 	sortBy := flag.String("sort", "crossing_rate", "sort column: crossing_rate, win_rate, total_games, avg_rating")
 	flag.Parse()
@@ -96,6 +102,9 @@ func main() {
 			joined++
 		}
 
+		// Aggregate per-move loss for both players.
+		applyLossStats(users, record, *lossMaxEval, *lossIgnoreMoves)
+
 		// Process sente player.
 		if record.SenteName != "" {
 			u := getOrCreateUser(users, record.SenteName)
@@ -118,6 +127,11 @@ func main() {
 					u.crossings++
 					if resultSide == "sente" {
 						u.wins++
+					}
+				} else if crossingSide == "gote" {
+					u.nonCrossings++
+					if resultSide == "sente" {
+						u.nonWins++
 					}
 				}
 			}
@@ -146,6 +160,11 @@ func main() {
 					if resultSide == "gote" {
 						u.wins++
 					}
+				} else if crossingSide == "sente" {
+					u.nonCrossings++
+					if resultSide == "gote" {
+						u.nonWins++
+					}
 				}
 			}
 		}
@@ -164,6 +183,10 @@ func main() {
 		crossingRate   float64
 		wins           int
 		winRate        float64
+		nonCrossings   int
+		nonWinRate     float64
+		avgLoss        float64
+		lossPositions  int
 		topAttacks     string
 	}
 
@@ -184,9 +207,17 @@ func main() {
 		if u.crossings > 0 {
 			winRate = float64(u.wins) / float64(u.crossings)
 		}
+		nonWinRate := 0.0
+		if u.nonCrossings > 0 {
+			nonWinRate = float64(u.nonWins) / float64(u.nonCrossings)
+		}
 		overallWinRate := 0.0
 		if u.parquetGames > 0 {
 			overallWinRate = float64(u.totalWins) / float64(u.parquetGames)
+		}
+		avgLoss := 0.0
+		if u.lossCount > 0 {
+			avgLoss = float64(u.lossSum) / float64(u.lossCount)
 		}
 		results = append(results, userResult{
 			name:           name,
@@ -198,6 +229,10 @@ func main() {
 			crossingRate:   crossingRate,
 			wins:           u.wins,
 			winRate:        winRate,
+			nonCrossings:   u.nonCrossings,
+			nonWinRate:     nonWinRate,
+			avgLoss:        avgLoss,
+			lossPositions:  u.lossCount,
 			topAttacks:     formatTopAttacks(u.attackCounts, *topN),
 		})
 	}
@@ -224,9 +259,9 @@ func main() {
 	// 5. Print CSV.
 	fmt.Fprintf(os.Stderr, "users with >= %d games: %d (threshold=%d)\n",
 		*minGames, len(results), *threshold)
-	fmt.Println("name,avg_rating,games,overall_win_rate,eval_games,crossings,crossing_rate,wins,win_rate,top_attacks")
+	fmt.Println("name,avg_rating,games,overall_win_rate,eval_games,crossings,crossing_rate,wins,win_rate,non_crossings,non_crossing_win_rate,avg_loss,loss_positions,top_attacks")
 	for _, r := range results {
-		fmt.Printf("%s,%.0f,%d,%.4f,%d,%d,%.4f,%d,%.4f,%s\n",
+		fmt.Printf("%s,%.0f,%d,%.4f,%d,%d,%.4f,%d,%.4f,%d,%.4f,%.2f,%d,%s\n",
 			r.name,
 			r.avgRating,
 			r.parquetGames,
@@ -236,6 +271,10 @@ func main() {
 			r.crossingRate,
 			r.wins,
 			r.winRate,
+			r.nonCrossings,
+			r.nonWinRate,
+			r.avgLoss,
+			r.lossPositions,
 			r.topAttacks,
 		)
 	}
@@ -248,6 +287,73 @@ func getOrCreateUser(users map[string]*userStats, name string) *userStats {
 		users[name] = u
 	}
 	return u
+}
+
+func applyLossStats(users map[string]*userStats, record cute.GameRecord, maxAbsEval int, ignoreMoves int) {
+	if len(record.MoveEvals) < 2 {
+		return
+	}
+	for i := 1; i < len(record.MoveEvals); i++ {
+		before := record.MoveEvals[i-1]
+		after := record.MoveEvals[i]
+		if ignoreMoves > 0 && int(after.Ply) <= ignoreMoves {
+			continue
+		}
+		if before.ScoreType != "cp" || after.ScoreType != "cp" {
+			continue
+		}
+		if maxAbsEval > 0 && absInt32(before.ScoreValue) > int32(maxAbsEval) {
+			continue
+		}
+		ply := int(after.Ply)
+		mover := "sente"
+		if ply%2 == 0 {
+			mover = "gote"
+		}
+		loss := perMoveLoss(before.ScoreValue, after.ScoreValue, mover)
+		if loss <= 0 {
+			continue
+		}
+		switch mover {
+		case "sente":
+			if record.SenteName == "" {
+				continue
+			}
+			u := getOrCreateUser(users, record.SenteName)
+			u.lossSum += int64(loss)
+			u.lossCount++
+		case "gote":
+			if record.GoteName == "" {
+				continue
+			}
+			u := getOrCreateUser(users, record.GoteName)
+			u.lossSum += int64(loss)
+			u.lossCount++
+		}
+	}
+}
+
+func perMoveLoss(before, after int32, mover string) int32 {
+	var loss int32
+	switch mover {
+	case "sente":
+		loss = before - after
+	case "gote":
+		loss = after - before
+	default:
+		return 0
+	}
+	if loss < 0 {
+		return 0
+	}
+	return loss
+}
+
+func absInt32(v int32) int32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // formatTopAttacks returns the top-N attack tags as "tag1(count1) tag2(count2) ...".

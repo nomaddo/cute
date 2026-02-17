@@ -3,20 +3,24 @@ package main
 // This command estimates how much "early advantage" (first crossing a score threshold)
 // increases the chance to win, while also accounting for player rating differences.
 //
-// It does this with logistic regression, a simple model for win/lose outcomes:
-//   - Output is a probability between 0 and 1.
-//   - Coefficients tell how each factor shifts the odds of winning.
+// It uses logistic regression with one sample per game from sente's perspective.
+// The output is a probability between 0 and 1, and coefficients tell how each
+// factor shifts the odds of sente winning.
 //
-// Key idea: we want to separate
+// Key ideas:
 //   (1) strength difference (rating_diff)
 //   (2) early advantage (first_crossed)
-//   (3) whether rating changes the "convert advantage into wins" effect
+//   (3) whether absolute skill changes the "convert advantage into wins" effect
 //
-// The model uses these features (fit once for all players):
-//   intercept         : baseline win tendency
-//   rating_diff_scaled: (player_rating - opponent_rating) / ratingScale
-//   first_crossed     : 1 if this player first reached the eval threshold
-//   rating_x_first    : rating_scaled * first_crossed (interaction term)
+// Features:
+//   intercept         : baseline sente win tendency (at mean rating, no first-cross)
+//   rating_diff_scaled: (sente_rating - gote_rating) / ratingScale
+//   first_crossed     : 1 if sente first reached the eval threshold, 0 if gote did
+//   rating_x_first    : centered_rating * first_crossed (interaction term)
+//                        where centered_rating = (sente_rating - mean_rating) / ratingScale
+//
+// Centering the rating makes the first_crossed coefficient represent the
+// effect at the mean rating of the dataset, not at an arbitrary rating = 0.
 //
 // If rating_x_first is positive, higher-rated players convert early advantage more reliably.
 // If rating_x_first is near 0, that "conversion power" does not depend on rating.
@@ -86,30 +90,40 @@ func main() {
 		fatal(err)
 	}
 
-	// Build samples for both players and fit a single model.
+	// Build one sample per game (sente perspective) and fit a single model.
 	// We use batch gradient descent (simple, reliable for a small number of features).
-	samples, cts := buildSamples(records, *threshold, *ratingScale, *maxAbsDiff)
+	samples, cts, meanRating := buildSamples(records, *threshold, *ratingScale, *maxAbsDiff)
 	if len(samples) == 0 {
 		fatal(fmt.Errorf("no samples available after filtering (total=%d skipped=%d)", cts.total, cts.skipped))
 	}
-	weights := fitLogReg(samples, *iter, *lr, *workers)
+	weights, loss := fitLogReg(samples, *iter, *lr, *workers)
 
 	fmt.Println("data:")
 	fmt.Printf("  input: %s\n", *input)
 	fmt.Printf("  threshold: %d\n", *threshold)
 	fmt.Printf("  rating-scale: %.0f\n", *ratingScale)
-	fmt.Printf("  samples: total=%d (skipped=%d)\n", len(samples), cts.skipped)
+	fmt.Printf("  games: %d (skipped=%d)\n", len(samples), cts.skipped)
 	fmt.Printf("  max-abs-diff: %d\n", *maxAbsDiff)
+	fmt.Printf("  mean-sente-rating: %.0f\n", meanRating)
 	fmt.Printf("  workers: %d\n", *workers)
 	fmt.Println("model:")
 	fmt.Println("  features: intercept, rating_diff_scaled, first_crossed, rating_x_first")
+	fmt.Printf("  final-loss: %.6f\n", loss)
 
-	printSection("all", weights, *ratingScale, ratings)
+	printSection("all", weights, *ratingScale, meanRating, ratings)
 }
 
-func buildSamples(records []cute.GameRecord, threshold int, ratingScale float64, maxAbsDiff int) ([]sample, counts) {
-	var samples []sample
+func buildSamples(records []cute.GameRecord, threshold int, ratingScale float64, maxAbsDiff int) ([]sample, counts, float64) {
+	// First pass: filter games and compute mean sente rating for centering.
+	type accepted struct {
+		senteRating     float64
+		goteRating      float64
+		senteFirstCross bool
+		senteWin        bool
+	}
+	var games []accepted
 	cts := counts{total: len(records)}
+	var sumRating float64
 	for _, record := range records {
 		crossingSide := firstCrossingSide(record.MoveEvals, threshold)
 		resultSide := winnerSide(record.Result)
@@ -124,51 +138,51 @@ func buildSamples(records []cute.GameRecord, threshold int, ratingScale float64,
 			cts.skipped++
 			continue
 		}
-
-		// Sente sample
-		samples = append(samples, makeSample(
-			float64(record.SenteRating),
-			float64(record.GoteRating),
-			crossingSide == "sente",
-			resultSide == "sente",
-			ratingScale,
-		))
-		// Gote sample
-		samples = append(samples, makeSample(
-			float64(record.GoteRating),
-			float64(record.SenteRating),
-			crossingSide == "gote",
-			resultSide == "gote",
-			ratingScale,
-		))
+		games = append(games, accepted{
+			senteRating:     float64(record.SenteRating),
+			goteRating:      float64(record.GoteRating),
+			senteFirstCross: crossingSide == "sente",
+			senteWin:        resultSide == "sente",
+		})
+		sumRating += float64(record.SenteRating)
 	}
-	return samples, cts
+	meanRating := 0.0
+	if len(games) > 0 {
+		meanRating = sumRating / float64(len(games))
+	}
+	// Second pass: build one sample per game (sente perspective) with centered rating.
+	samples := make([]sample, 0, len(games))
+	for _, g := range games {
+		samples = append(samples, makeSample(g.senteRating, g.goteRating, g.senteFirstCross, g.senteWin, ratingScale, meanRating))
+	}
+	return samples, cts, meanRating
 }
 
-func makeSample(playerRating, opponentRating float64, playerFirstCross bool, playerWin bool, ratingScale float64) sample {
+func makeSample(senteRating, goteRating float64, senteFirstCross bool, senteWin bool, ratingScale float64, meanRating float64) sample {
 	first := 0.0
-	if playerFirstCross {
+	if senteFirstCross {
 		first = 1.0
 	}
 	label := 0.0
-	if playerWin {
+	if senteWin {
 		label = 1.0
 	}
-	// ratingDiff says "how much stronger is the player than the opponent".
-	// Scaling keeps numbers small and makes training stable.
-	ratingDiff := (playerRating - opponentRating) / ratingScale
-	// ratingScaled is the player's rating on the same scale.
-	ratingScaled := playerRating / ratingScale
-	// Interaction term: only active when the player first crossed the threshold.
+	// ratingDiff: how much stronger sente is than gote.
+	ratingDiff := (senteRating - goteRating) / ratingScale
+	// Centered rating: sente's rating relative to the dataset mean.
+	// Centering makes the intercept and first_crossed coefficients
+	// represent effects at the mean rating, not at rating=0.
+	ratingCentered := (senteRating - meanRating) / ratingScale
+	// Interaction term: only active when sente first crossed the threshold.
 	// If its coefficient is positive, higher rating means better conversion of advantage.
-	ratingFirst := ratingScaled * first
+	ratingFirst := ratingCentered * first
 	return sample{
 		x: []float64{1.0, ratingDiff, first, ratingFirst},
 		y: label,
 	}
 }
 
-func fitLogReg(samples []sample, iter int, lr float64, workers int) []float64 {
+func fitLogReg(samples []sample, iter int, lr float64, workers int) ([]float64, float64) {
 	// Initialize weights to zero. This corresponds to 50% predicted win rate.
 	weights := make([]float64, len(samples[0].x))
 	if workers > len(samples) {
@@ -240,7 +254,21 @@ func fitLogReg(samples []sample, iter int, lr float64, workers int) []float64 {
 			weights[j] -= grad[j] * scale
 		}
 	}
-	return weights
+	// Compute final loss (negative log-likelihood) for convergence check.
+	var totalLoss float64
+	for _, s := range samples {
+		p := sigmoid(dot(weights, s.x))
+		// Clamp to avoid log(0).
+		if p < 1e-15 {
+			p = 1e-15
+		}
+		if p > 1-1e-15 {
+			p = 1 - 1e-15
+		}
+		totalLoss += -s.y*math.Log(p) - (1-s.y)*math.Log(1-p)
+	}
+	finalLoss := totalLoss / float64(len(samples))
+	return weights, finalLoss
 }
 
 func printCoefficients(weights []float64) {
@@ -262,36 +290,36 @@ func printOddsRatios(weights []float64) {
 }
 
 func printPredictedRates(weights []float64) {
-	// These predictions use ratingDiff=0 to show the pure effect of first_crossed.
-	fmt.Println("predicted win rates (rating diff = 0):")
+	// Predictions at ratingDiff=0, ratingCentered=0 (mean-rated player).
+	fmt.Println("predicted win rates (rating diff = 0, at mean rating):")
 	fmt.Printf("  first-cross=1: %.3f\n", predict(weights, 0, 1, 0))
 	fmt.Printf("  first-cross=0: %.3f\n", predict(weights, 0, 0, 0))
 }
 
-func printRatingFirstCross(weights []float64, ratingScale float64, ratings []int) {
+func printRatingFirstCross(weights []float64, ratingScale float64, meanRating float64, ratings []int) {
 	if len(ratings) == 0 {
 		return
 	}
 	fmt.Println("expected win rates by rating (first-cross=1, rating diff = 0):")
 	for _, rating := range ratings {
-		ratingScaled := float64(rating) / ratingScale
-		winRate := predict(weights, 0, 1, ratingScaled)
+		ratingCentered := (float64(rating) - meanRating) / ratingScale
+		winRate := predict(weights, 0, 1, ratingCentered)
 		fmt.Printf("  rating=%d: win_rate=%.3f\n", rating, winRate)
 	}
 }
 
-func predict(weights []float64, ratingDiff float64, firstCross float64, ratingScaled float64) float64 {
-	// ratingScaled should match the same scale as ratingScale. It affects only the interaction.
-	x := []float64{1.0, ratingDiff, firstCross, ratingScaled * firstCross}
+func predict(weights []float64, ratingDiff float64, firstCross float64, ratingCentered float64) float64 {
+	// ratingCentered is (playerRating - meanRating) / ratingScale; affects only the interaction.
+	x := []float64{1.0, ratingDiff, firstCross, ratingCentered * firstCross}
 	return sigmoid(dot(weights, x))
 }
 
-func printSection(label string, weights []float64, ratingScale float64, ratings []int) {
+func printSection(label string, weights []float64, ratingScale float64, meanRating float64, ratings []int) {
 	fmt.Printf("%s model:\n", label)
 	printCoefficients(weights)
 	printOddsRatios(weights)
 	printPredictedRates(weights)
-	printRatingFirstCross(weights, ratingScale, ratings)
+	printRatingFirstCross(weights, ratingScale, meanRating, ratings)
 }
 
 func sigmoid(z float64) float64 {

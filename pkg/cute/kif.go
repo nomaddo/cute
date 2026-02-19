@@ -546,9 +546,12 @@ func winnerFromPly(ply int) string {
 	return "gote_win"
 }
 
-func CollectKIF(root string) ([]string, error) {
-	var files []string
-	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+// WalkKIF calls fn for each .kif file found under root (in no particular
+// order). Unlike CollectKIF it never builds a full path list, so it works
+// well with directories containing millions of files.
+// If fn returns a non-nil error, the walk stops and WalkKIF returns that error.
+func WalkKIF(root string, fn func(path string) error) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -556,8 +559,27 @@ func CollectKIF(root string) ([]string, error) {
 			return nil
 		}
 		if strings.EqualFold(filepath.Ext(path), ".kif") {
-			files = append(files, path)
+			return fn(path)
 		}
+		return nil
+	})
+}
+
+// CountKIF returns the number of .kif files under root without
+// allocating a list of paths.
+func CountKIF(root string) (int, error) {
+	n := 0
+	err := WalkKIF(root, func(_ string) error {
+		n++
+		return nil
+	})
+	return n, err
+}
+
+func CollectKIF(root string) ([]string, error) {
+	var files []string
+	if err := WalkKIF(root, func(path string) error {
+		files = append(files, path)
 		return nil
 	}); err != nil {
 		return nil, err

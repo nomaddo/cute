@@ -46,11 +46,11 @@ func main() {
 	if _, err := os.Stat(enginePath); err != nil {
 		fatal(fmt.Errorf("engine binary not found at %s: %w", enginePath, err))
 	}
-	files, err := cute.CollectKIF(*inputDir)
+	totalFiles, err := cute.CountKIF(*inputDir)
 	if err != nil {
 		fatal(err)
 	}
-	if len(files) == 0 {
+	if totalFiles == 0 {
 		fatal(fmt.Errorf("no .kif files found in %s", *inputDir))
 	}
 
@@ -63,8 +63,8 @@ func main() {
 	if workers <= 0 {
 		workers = 1
 	}
-	if workers > len(files) {
-		workers = len(files)
+	if workers > totalFiles {
+		workers = totalFiles
 	}
 	if workers == 0 {
 		return
@@ -119,7 +119,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "\rprogress: %d/%d (%d%%)", count, total, percent)
 			}
 		}
-	}(len(files))
+	}(totalFiles)
 
 	var wg sync.WaitGroup
 	stopCh := make(chan os.Signal, 1)
@@ -189,18 +189,18 @@ func main() {
 		}()
 	}
 
-enqueue:
-	for _, path := range files {
+	_ = cute.WalkKIF(*inputDir, func(path string) error {
 		if _, ok := processedIDs[filepath.Base(path)]; ok {
 			atomic.AddInt64(&processed, 1)
-			continue
+			return nil
 		}
 		select {
 		case <-stopRequested:
-			break enqueue
+			return filepath.SkipAll
 		case jobs <- path:
 		}
-	}
+		return nil
+	})
 	close(jobs)
 	wg.Wait()
 	close(done)

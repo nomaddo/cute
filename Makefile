@@ -1,4 +1,4 @@
-PARQUET ?= out/checkpoint_66294.parquet
+PARQUET ?= output_6.parquet
 OPENING_DB ?= out/6_senkei.parquet
 RESULTS_DIR ?= out/results
 LOGREG_MAX_ABS_DIFF ?= 200
@@ -20,11 +20,11 @@ results-logreg:
 
 results-analyze:
 	@mkdir -p $(RESULTS_DIR)
-	go run ./cmd/analyze -input $(PARQUET) -thresholds 300,500,1000 > $(RESULTS_DIR)/analyze_thresholds_300_500_1000.txt
+	go run ./cmd/analyze -input $(PARQUET) -thresholds 200,300,500,1000 -ignore-first-moves 20 > $(RESULTS_DIR)/analyze_thresholds_200_300_500_1000.txt
 
 results-stats:
 	@mkdir -p $(RESULTS_DIR)
-	go run ./cmd/stats -parquet $(PARQUET) -opening-db $(OPENING_DB) -threshold 400  -min-games 20 > $(RESULTS_DIR)/stats.txt
+	go run ./cmd/stats -parquet $(PARQUET) -opening-db $(OPENING_DB) -threshold 300  -min-games 50 > $(RESULTS_DIR)/stats.txt
 
 shikenbisya-ibisya:
 	go run ./cmd/analyze -input $(PARQUET) -opening-db $(OPENING_DB) -thresholds "200,300,500,1000" -ignore-first-moves 20 \
